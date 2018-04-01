@@ -2550,7 +2550,7 @@ void ScriptEnvironment::PushContext(int level) {
 }
 
 void ScriptEnvironment::PopContext() {
-   var_table.PushGlobal();
+   var_table.Pop();
 }
 
 void ScriptEnvironment::PushContextGlobal() {
