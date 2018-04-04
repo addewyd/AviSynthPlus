@@ -601,7 +601,7 @@ public:
         return (MtMode)clip->SetCacheHints(CACHE_GET_MTMODE, 0);
     }
 
-    static MtMode GetMtMode(const PClip &clip, const AVSFunction *invokeCall, const InternalEnvironment* env)
+    static MtMode GetMtMode(const PClip &clip, const Function *invokeCall, const InternalEnvironment* env)
     {
         bool invokeModeForced;
 
@@ -618,7 +618,7 @@ public:
         }
     }
 
-    static bool UsesDefaultMtMode(const PClip &clip, const AVSFunction *invokeCall, const InternalEnvironment* env)
+    static bool UsesDefaultMtMode(const PClip &clip, const Function *invokeCall, const InternalEnvironment* env)
     {
         return !ClipSpecifiesMtMode(clip) && !env->FilterHasMtMode(invokeCall);
     }
@@ -731,10 +731,10 @@ public:
   virtual int __stdcall DecrImportDepth();
 //  virtual void __stdcall SetPrefetcher(Prefetcher *p); // replaced by ThreadPool* ScriptEnvironment::NewThreadPool(size_t nThreads)
   virtual void __stdcall AdjustMemoryConsumption(size_t amount, bool minus);
-  virtual bool __stdcall Invoke(AVSValue *result, const char* name, const AVSValue& args, const char* const* arg_names=0);
+  virtual bool __stdcall Invoke(AVSValue *result, const char* name, const AVSValue& args, const char* const* arg_names = 0);
   virtual void __stdcall SetFilterMTMode(const char* filter, MtMode mode, bool force);
   virtual void __stdcall SetFilterMTMode(const char* filter, MtMode mode, MtWeight weight);
-  virtual MtMode __stdcall GetFilterMTMode(const AVSFunction* filter, bool* is_forced) const;
+  virtual MtMode __stdcall GetFilterMTMode(const Function* filter, bool* is_forced) const;
   virtual void __stdcall ParallelJob(ThreadWorkerFuncPtr jobFunc, void* jobData, IJobCompletion* completion);
   virtual IJobCompletion* __stdcall NewCompletion(size_t capacity);
   virtual size_t  __stdcall GetProperty(AvsEnvProperty prop);
@@ -742,7 +742,7 @@ public:
   virtual void __stdcall Free(void* ptr);
   virtual ClipDataStore* __stdcall ClipData(IClip *clip);
   virtual MtMode __stdcall GetDefaultMtMode() const;
-  virtual bool __stdcall FilterHasMtMode(const AVSFunction* filter) const;
+  virtual bool __stdcall FilterHasMtMode(const Function* filter) const;
   virtual void __stdcall SetLogParams(const char *target, int level);
   virtual void __stdcall LogMsg(int level, const char* fmt, ...);
   virtual void __stdcall LogMsg_valist(int level, const char* fmt, va_list va);
@@ -759,8 +759,8 @@ public:
 
   virtual ThreadPool* __stdcall GetThreadPool();
   virtual ThreadPool* __stdcall NewThreadPool(size_t nThreads);
-  virtual bool __stdcall InvokeThread(AVSValue* result, const char* name, const AVSValue& args,
-      const char* const* arg_names, IScriptEnvironment2* env);
+  virtual bool __stdcall InvokeThread(AVSValue* result, const char* name, const Function* f, const AVSValue& args,
+    const char* const* arg_names, IScriptEnvironment2* env);
 
   virtual void __stdcall AddRef() { };
   virtual void __stdcall Release() { };
@@ -771,6 +771,7 @@ public:
 
 
   virtual void __stdcall UpdateFunctionExports(const PFunction& func, const char *exportVar);
+  virtual bool __stdcall InvokeFunc(AVSValue *result, const char* name, const Function *f, const AVSValue& args, const char* const* arg_names = 0);
 
 private:
 
@@ -793,8 +794,10 @@ private:
   int ImportDepth;
   long EnvCount; // for ScriptEnvironmentTLS leak detection
 
-  const AVSFunction* Lookup(const char* search_name, const AVSValue* args, size_t num_args,
+  const Function* Lookup(const char* search_name, const AVSValue* args, size_t num_args,
                       bool &pstrict, size_t args_names_count, const char* const* arg_names);
+  bool CheckArguments(const Function* f, const AVSValue* args, size_t num_args,
+    bool& pstrict, size_t args_names_count, const char* const* arg_names);
   void EnsureMemoryLimit(size_t request);
   uint64_t memory_max;
   std::atomic<uint64_t> memory_used;
@@ -1470,16 +1473,24 @@ void __stdcall ScriptEnvironment::SetFilterMTMode(const char* filter, MtMode mod
   }
 }
 
-bool __stdcall ScriptEnvironment::FilterHasMtMode(const AVSFunction* filter) const
+bool __stdcall ScriptEnvironment::FilterHasMtMode(const Function* filter) const
 {
+  if (filter->name == nullptr) { // no named function
+    return false;
+  }
   const auto &end = MtMap.end();
   return (end != MtMap.find(NormalizeString(filter->canon_name)))
       || (end != MtMap.find(NormalizeString(filter->name)));
 }
 
-MtMode __stdcall ScriptEnvironment::GetFilterMTMode(const AVSFunction* filter, bool* is_forced) const
+MtMode __stdcall ScriptEnvironment::GetFilterMTMode(const Function* filter, bool* is_forced) const
 {
   assert(NULL != filter);
+  if (filter->name == nullptr) { // no named function
+    *is_forced = false;
+    return DefaultMtMode;
+  }
+
   assert(NULL != filter->name);
   assert(NULL != filter->canon_name);
 
@@ -2802,12 +2813,23 @@ static size_t Flatten(const AVSValue& src, AVSValue* dst, size_t index, int leve
   return index;
 }
 
-const AVSFunction* ScriptEnvironment::Lookup(const char* search_name, const AVSValue* args, size_t num_args,
+const Function* ScriptEnvironment::Lookup(const char* search_name, const AVSValue* args, size_t num_args,
                     bool &pstrict, size_t args_names_count, const char* const* arg_names)
 {
-  std::unique_lock<std::recursive_mutex> env_lock(plugin_mutex);
+  AVSValue avsv;
+  if (GetVar(search_name, &avsv) && avsv.IsFunction()) {
+    const PFunction& func = avsv.AsFunction();
+    if (AVSFunction::TypeMatch(func->param_types, args, num_args, false, this) &&
+      AVSFunction::ArgNameMatch(func->param_types, args_names_count, arg_names))
+    {
+      pstrict = AVSFunction::TypeMatch(func->param_types, args, num_args, true, this);
+      return func->GetDefinition();
+    }
+  }
 
-  const AVSFunction *result = NULL;
+	std::unique_lock<std::recursive_mutex> env_lock(plugin_mutex);
+
+  const Function *result = NULL;
 
   size_t oanc;
   do {
@@ -2846,10 +2868,22 @@ const AVSFunction* ScriptEnvironment::Lookup(const char* search_name, const AVSV
   return NULL;
 }
 
+bool ScriptEnvironment::CheckArguments(const Function* func, const AVSValue* args, size_t num_args,
+  bool &pstrict, size_t args_names_count, const char* const* arg_names)
+{
+  if (AVSFunction::TypeMatch(func->param_types, args, num_args, false, this) &&
+    AVSFunction::ArgNameMatch(func->param_types, args_names_count, arg_names))
+  {
+    pstrict = AVSFunction::TypeMatch(func->param_types, args, num_args, true, this);
+    return true;
+  }
+  return false;
+}
+
 AVSValue ScriptEnvironment::Invoke(const char* name, const AVSValue args, const char* const* arg_names)
 {
-  AVSValue result;
-  if (!Invoke(&result, name, args, arg_names))
+	AVSValue result;
+	if (!InvokeFunc(&result, name, nullptr, args, arg_names))
   {
     throw NotFound();
   }
@@ -2869,24 +2903,36 @@ AVSValue ScriptEnvironment::Invoke(const char* name, const AVSValue args, const 
   return result;
 }
 
-bool __stdcall ScriptEnvironment::InvokeThread(AVSValue* result, const char* name, const AVSValue& args, const char* const* arg_names, IScriptEnvironment2* env)
+bool __stdcall ScriptEnvironment::InvokeThread(AVSValue* result, const char* name, const Function *f, const AVSValue& args, const char* const* arg_names, IScriptEnvironment2* env)
 {
   const int args_names_count = (arg_names && args.IsArray()) ? args.ArraySize() : 0;
 
-  // get how many args we will need to store
-  size_t args2_count = Flatten(args, NULL, 0, 0, arg_names);
-  if (args2_count > ScriptParser::max_args)
-    ThrowError("Too many arguments passed to function (max. is %d)", ScriptParser::max_args);
+  if (name == nullptr) {
+    // for debug printing
+    name = "<anonymous function>";
+  }
+
+	// get how many args we will need to store
+	size_t args2_count = Flatten(args, NULL, 0, 0, arg_names);
+	if (args2_count > ScriptParser::max_args)
+		ThrowError("Too many arguments passed to function (max. is %d)", ScriptParser::max_args);
 
   // flatten unnamed args
   std::vector<AVSValue> args2(args2_count, AVSValue());
   Flatten(args, args2.data(), 0, 0, arg_names);
 
-  // find matching function
-  bool strict = false;
-  const AVSFunction *f = this->Lookup(name, args2.data(), args2_count, strict, args_names_count, arg_names);
-  if (!f) {
-    return false;
+	bool strict = false;
+  if (f != nullptr) {
+    // check arguments
+    if (!this->CheckArguments(f, args2.data(), args2_count, strict, args_names_count, arg_names))
+      return false;
+  }
+  else {
+    // find matching function
+    f = this->Lookup(name, args2.data(), args2_count, strict, args_names_count, arg_names);
+    if (!f) {
+      return false;
+    }
   }
 
   // combine unnamed args into arrays
@@ -2989,15 +3035,25 @@ struct SuppressThreadCounter {
 
 bool __stdcall ScriptEnvironment::Invoke(AVSValue *result, const char* name, const AVSValue& args, const char* const* arg_names)
 {
-  if (g_thread_id != 0) {
-    ThrowError("Invalid ScriptEnvironment. You are using different thread's environment.");
-  }
+  return InvokeFunc(result, name, nullptr, args, arg_names);
+}
 
-  if (g_getframe_recursive_count != 0) {
-    // Invoked from GetFrame/GetAudio, skip all cache and mt mecanism
-    return InvokeThread(result, name, args, arg_names, this);
+bool __stdcall ScriptEnvironment::InvokeFunc(AVSValue *result, const char* name, const Function *f, const AVSValue& args, const char* const* arg_names)
+{
+	if (g_thread_id != 0) {
+		ThrowError("Invalid ScriptEnvironment. You are using different thread's environment.");
+	}
+
+	if (g_getframe_recursive_count != 0) {
+		// Invoked from GetFrame/GetAudio, skip all cache and mt mecanism
+		return InvokeThread(result, name, f, args, arg_names, this);
+	}
+
+  if (name == nullptr) {
+    // for debug printing
+    name = "<anonymous function>";
   }
-  
+	
 #ifdef DEBUG_GSCRIPTCLIP_MT
   _RPT3(0, "ScriptEnvironment::Invoke %s try memory lock %p thread %d\n", name, (void *)&memory_mutex, GetCurrentThreadId());
   std::unique_lock<std::recursive_mutex> env_lock(memory_mutex);
@@ -3009,7 +3065,6 @@ bool __stdcall ScriptEnvironment::Invoke(AVSValue *result, const char* name, con
   SuppressThreadCounter suppressThreadCount_;
 
   bool strict = false;
-  const AVSFunction *f;
 
   // chainedCtor is true if we are being constructed inside/by the
   // constructor of another filter. In that case we want MT protections
@@ -3066,10 +3121,17 @@ bool __stdcall ScriptEnvironment::Invoke(AVSValue *result, const char* name, con
   }
   bool isSourceFilter = !foundClipArgument;
 
-  // find matching function
-  f = this->Lookup(name, args2.data(), args2_count, strict, args_names_count, arg_names);
-  if (!f)
-    return false;
+  if (f != nullptr) {
+    // check arguments
+    if (!CheckArguments(f, args2.data(), args2_count, strict, args_names_count, arg_names))
+      return false;
+  }
+  else {
+    // find matching function
+    f = this->Lookup(name, args2.data(), args2_count, strict, args_names_count, arg_names);
+    if (!f)
+      return false;
+  }
 
   // combine unnamed args into arrays
   size_t src_index=0, dst_index=0;
@@ -3230,7 +3292,7 @@ success:;
     // PF 161012 hack(?) don't call if prefetch. If effective mt mode is MT_MULTI, then
     // Prefetch create gets called again
     // Prefetch is activated above in: fret = funcCtor->InstantiateFilter();
-    if (fret.IsClip() && strcmp(f->name, "Prefetch"))
+    if (fret.IsClip() && (f->name == nullptr || strcmp(f->name, "Prefetch")))
     {
       const PClip &clip = fret.AsClip();
 
@@ -3521,6 +3583,7 @@ void ScriptEnvironment::UpdateFunctionExports(const PFunction& func, const char 
 
   std::unique_lock<std::recursive_mutex> env_lock(plugin_mutex);
   plugin_manager->UpdateFunctionExports(func->name, func->param_types, exportVar);
+  plugin_manager->UpdateFunctionExports(func->canon_name, func->param_types, exportVar);
 }
 
 extern void ApplyMessage(PVideoFrame* frame, const VideoInfo& vi,
