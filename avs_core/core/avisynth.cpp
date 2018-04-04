@@ -635,7 +635,7 @@ OneTimeLogTicket::OneTimeLogTicket(ELogTicketType type)
     : _type(type)
 {}
 
-OneTimeLogTicket::OneTimeLogTicket(ELogTicketType type, const AVSFunction *func)
+OneTimeLogTicket::OneTimeLogTicket(ELogTicketType type, const Function *func)
     : _type(type), _function(func)
 {}
 
@@ -769,6 +769,8 @@ public:
 
    virtual ConcurrentVarStringFrame* __stdcall GetTopFrame();
 
+
+  virtual void __stdcall UpdateFunctionExports(const PFunction& func, const char *exportVar);
 
 private:
 
@@ -3363,6 +3365,14 @@ bool ScriptEnvironment::FunctionExists(const char* name)
 {
   std::unique_lock<std::recursive_mutex> env_lock(plugin_mutex);
 
+  // Look among variable table
+  AVSValue result;
+  if (GetVar(name, &result)) {
+    if (result.IsFunction()) {
+      return true;
+    }
+  }
+
   // Look among internal functions
   if (InternalFunctionExists(name))
     return true;
@@ -3500,6 +3510,17 @@ AVSMap* __stdcall ScriptEnvironment::GetAVSMap(PVideoFrame& frame)
 ConcurrentVarStringFrame* ScriptEnvironment::GetTopFrame()
 {
   return &top_frame;
+}
+
+void ScriptEnvironment::UpdateFunctionExports(const PFunction& func, const char *exportVar)
+{
+  if (g_thread_id != 0 || g_getframe_recursive_count != 0) {
+    // no need to export function at runtime
+    return;
+  }
+
+  std::unique_lock<std::recursive_mutex> env_lock(plugin_mutex);
+  plugin_manager->UpdateFunctionExports(func->name, func->param_types, exportVar);
 }
 
 extern void ApplyMessage(PVideoFrame* frame, const VideoInfo& vi,
