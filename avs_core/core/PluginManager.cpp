@@ -286,9 +286,8 @@ bool AVSFunction::IsScriptFunction(const Function* func)
   //if (!stricmp(this->name, "srestore_inside_1"))
   //  return true;
 #endif
-  return ( /*(func->apply == &(FunctionInstance::Execute))
-  		  || */(func->apply == &(ScriptFunction::Execute))
-		  || (func->apply == &Eval)
+  return ( (func->apply == &(FunctionInstance::Execute_))
+ 		  || (func->apply == &Eval)
           || (func->apply == &EvalOop)
           || (func->apply == &Import)
         );
@@ -375,6 +374,7 @@ bool AVSFunction::TypeMatch(const char* param_types, const AVSValue* args, size_
 
     switch (*param_types) {
       case 'b': case 'i': case 'f': case 's': case 'c':
+      case 'n':
 #ifdef NEW_AVSVALUE
       case 'a': // PF Arrays
 #endif
