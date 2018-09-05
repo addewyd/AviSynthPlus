@@ -46,7 +46,8 @@ extern const AVSFunction Conditional_filters[] = {
   {  "ConditionalFilter", BUILTIN_FUNC_PREFIX, "cccsss[show]b", ConditionalFilter::Create, (void *)0 },
   // easy syntax from GConditionalFilter, args3 and 4 to "=" and "true":
   {  "ConditionalFilter", BUILTIN_FUNC_PREFIX, "cccs[show]b", ConditionalFilter::Create, (void *)1 },
-  {  "ScriptClip",        BUILTIN_FUNC_PREFIX, "cs[show]b[after_frame]b", ScriptClip::Create },
+  {  "ScriptClip",        BUILTIN_FUNC_PREFIX, "cs[show]b[after_frame]b[file]s", ScriptClip::Create },
+  {  "ScriptClipF",       BUILTIN_FUNC_PREFIX, "cs[show]b[after_frame]b", ScriptClip::Create_from_file },
   {  "ConditionalReader", BUILTIN_FUNC_PREFIX, "css[show]b", ConditionalReader::Create },
   {  "FrameEvaluate",     BUILTIN_FUNC_PREFIX, "cs[show]b[after_frame]b", ScriptClip::Create_eval },
   {  "WriteFile",         BUILTIN_FUNC_PREFIX, "c[filename]ss+[append]b[flush]b", Write::Create },
@@ -420,11 +421,49 @@ AVSValue __cdecl ConditionalFilter::Create(AVSValue args, void* user_data, IScri
  * Implicit last, and current frame is set on each frame.
  **************************/
 
-ScriptClip::ScriptClip(PClip _child, AVSValue  _script, bool _show, bool _only_eval, bool _eval_after_frame, IScriptEnvironment* env) :
-  GenericVideoFilter(_child), script(_script), show(_show), only_eval(_only_eval), eval_after(_eval_after_frame) {
-  AVS_UNUSED(env);
+ScriptClip::ScriptClip(PClip _child, AVSValue  _script, bool _show, 
+	bool _only_eval, bool _eval_after_frame,  IScriptEnvironment* env) :
+  GenericVideoFilter(_child), script(_script), show(_show), 
+	only_eval(_only_eval), eval_after(_eval_after_frame), from_file(false), buf(0) {
+    AVS_UNUSED(env);
 }
 
+ScriptClip::ScriptClip(PClip _child, const char *  _file, bool _show,
+	bool _only_eval, bool _eval_after_frame, IScriptEnvironment* env) :
+	GenericVideoFilter(_child), show(_show),
+	only_eval(_only_eval), eval_after(_eval_after_frame), from_file(true), buf(0) {
+
+		FILE *f = fopen(_file, "r");
+		if (!f) {
+			env->ThrowError("Cannot open script file");
+		}
+
+		if (fseek(f, 0L, SEEK_END) == 0) {
+			long bufsize = ftell(f);
+			if (bufsize == -1) {
+				env->ThrowError("Error reading file");
+			}
+			if (fseek(f, 0L, SEEK_SET) != 0) {
+				env->ThrowError("Error reading file");
+			}
+			buf = new char[bufsize + 1];
+			size_t newLen = fread(buf, sizeof(char), bufsize, f);
+			if (newLen == 0) {
+				env->ThrowError("Error reading file");
+			}
+			else {
+				buf[newLen] = '\0';
+			}
+		}
+		else {
+			env->ThrowError("Error reading file");
+		}
+		fclose(f);
+}
+
+ScriptClip::~ScriptClip() {
+	if (buf) delete[] buf;
+}
 
 int __stdcall ScriptClip::SetCacheHints(int cachehints, int frame_range)
 {
@@ -464,7 +503,7 @@ PVideoFrame __stdcall ScriptClip::GetFrame(int n, IScriptEnvironment* env) {
   if (eval_after) eval_return = child->GetFrame(n,env);
 
   try {
-    ScriptParser parser(env, script.AsString(), "[ScriptClip]");
+    ScriptParser parser(env, from_file? buf : script.AsString(), "[ScriptClip]");
     PExpression exp = parser.Parse();
     result = exp->Evaluate(env);
   } catch (const AvisynthError &error) {    
@@ -527,10 +566,19 @@ PVideoFrame __stdcall ScriptClip::GetFrame(int n, IScriptEnvironment* env) {
 
 AVSValue __cdecl ScriptClip::Create(AVSValue args, void* , IScriptEnvironment* env)
 {
-  return new ScriptClip(args[0].AsClip(), args[1], args[2].AsBool(false),false, args[3].AsBool(false), env);
+  return new ScriptClip(args[0].AsClip(), args[1], args[2].AsBool(false),false, 
+	  args[3].AsBool(false), env);
+}
+
+
+AVSValue __cdecl ScriptClip::Create_from_file(AVSValue args, void*, IScriptEnvironment* env)
+{
+	return new ScriptClip(args[0].AsClip(), args[1].AsString(), args[2].AsBool(false), false,
+		args[3].AsBool(false), env);
 }
 
 
 AVSValue __cdecl ScriptClip::Create_eval(AVSValue args, void* , IScriptEnvironment* env)
 {
-  return new ScriptClip(args[0].AsClip(), args[1], args[2].AsBool(false),true, args[3].AsBool(false), env);}
+  return new ScriptClip(args[0].AsClip(), args[1], args[2].AsBool(false),true, 
+	  args[3].AsBool(false), env);}
