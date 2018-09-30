@@ -659,6 +659,7 @@ public:
   
   PVideoFrame NewPlanarVideoFrame(int row_size, int height, int row_sizeUV, int heightUV, int align, bool U_first);
   bool MakeWritable(PVideoFrame* pvf);
+  bool MakePropertyWritable(PVideoFrame* pvf);
   void BitBlt(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int row_size, int height);
   void AtExit(IScriptEnvironment::ShutdownFunc function, void* user_data);
   PVideoFrame Subframe(PVideoFrame src, int rel_offset, int new_pitch, int new_row_size, int new_height);
@@ -1684,6 +1685,11 @@ public:
     core->UpdateFunctionExports(funcName, funcParams, exportVar);
   }
 
+	bool __stdcall MakePropertyWritable(PVideoFrame* pvf)
+	{
+		return core->MakePropertyWritable(pvf);
+	}
+
   InternalEnvironment* __stdcall NewThreadScriptEnvironment(int thread_id)
   {
     return new ThreadScriptEnvironment(thread_id, core, coreTLS);
@@ -1700,11 +1706,10 @@ public:
 	int& __stdcall GetSuppressThreadCount() {
 		return DISPATCH(suppressThreadCount);
 	}
-  
+
 	FilterGraphNode*& GetCurrentGraphNode() {
 		return DISPATCH(currentGraphNode);
 	}
-  
 
 #undef DISPATCH
 };
@@ -3284,6 +3289,35 @@ bool ScriptEnvironment::MakeWritable(PVideoFrame* pvf) {
   return true;
 }
 
+bool ScriptEnvironment::MakePropertyWritable(PVideoFrame* pvf) {
+	const PVideoFrame& vf = *pvf;
+
+	// If the frame is already writable, do nothing.
+	if (vf->IsPropertyWritable())
+		return false;
+
+	// Otherwise, allocate a new frame (using Subframe)
+	PVideoFrame dst;
+	if (vf->GetPitch(PLANAR_A)) {
+		// planar + alpha
+		dst = vf->Subframe(0, vf->GetPitch(), vf->GetRowSize(), vf->GetHeight(), 0, 0, vf->GetPitch(PLANAR_U), 0);
+	}
+	else if (vf->GetPitch(PLANAR_U)) {
+		// planar
+		dst = vf->Subframe(0, vf->GetPitch(), vf->GetRowSize(), vf->GetHeight(), 0, 0, vf->GetPitch(PLANAR_U));
+	}
+	else {
+		// single plane
+		dst = vf->Subframe(0, vf->GetPitch(), vf->GetRowSize(), vf->GetHeight());
+	}
+
+	// Copy properties
+	dst->avsmap->data = vf->avsmap->data;
+
+	*pvf = dst;
+	return true;
+}
+
 
 void ScriptEnvironment::AtExit(IScriptEnvironment::ShutdownFunc function, void* user_data) {
   at_exit.Add(function, user_data);
@@ -4027,7 +4061,7 @@ bool ScriptEnvironment::Invoke_(AVSValue *result, const AVSValue& implicit_last,
       auto last = (argbase == 0) ? implicit_last : AVSValue();
       *result = new FilterGraphNode((*result).AsClip(), f->name, last, args, arg_names, threadEnv.get());
     }
-    
+
     // args2 and args3 are not valid after this point anymore
 #ifdef _DEBUG
     if (PrevFrontCache != FrontCache && FrontCache != NULL) // cache registering swaps frontcache to the current
