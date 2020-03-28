@@ -1838,12 +1838,14 @@ ScriptEnvironment::ScriptEnvironment()
 
     // calc frame align
     frame_align = plane_align = FRAME_ALIGN;
+#ifdef ENABLE_CUDA
     for (int i = 0, end = Devices->GetNumDevices(DEV_TYPE_CUDA); i < end; ++i) {
       int align, pitchAlign;
       Devices->GetDevice(DEV_TYPE_CUDA, i)->GetAlignmentRequirement(&align, &pitchAlign);
       frame_align = max(frame_align, pitchAlign);
       plane_align = max(plane_align, align);
     }
+#endif
 
 
 
@@ -1893,12 +1895,16 @@ ScriptEnvironment::ScriptEnvironment()
     top_frame.Set("LOG_DEBUG",   (int)LOGLEVEL_DEBUG);
 
     top_frame.Set("DEV_TYPE_CPU", (int)DEV_TYPE_CPU);
+#ifdef ENABLE_CUDA
     top_frame.Set("DEV_TYPE_CUDA", (int)DEV_TYPE_CUDA);
+#endif
 
     top_frame.Set("CACHE_FAST_START", (int)CACHE_FAST_START);
     top_frame.Set("CACHE_OPTIMAL_SIZE", (int)CACHE_OPTIMAL_SIZE);
+#ifdef ENABLE_CUDA
     top_frame.Set("DEV_CUDA_PINNED_HOST", (int)DEV_CUDA_PINNED_HOST);
     top_frame.Set("DEV_FREE_THRESHOLD", (int)DEV_FREE_THRESHOLD);
+#endif
 
     InitMT();
     thread_pool = new ThreadPool(std::thread::hardware_concurrency(), 1, threadEnv.get());
@@ -2004,7 +2010,7 @@ ScriptEnvironment::~ScriptEnvironment() {
 
 #ifdef _DEBUG
   // LogMsg(LOGLEVEL_DEBUG, "We are before FrameRegistryCleanup");
-  // ListFrameRegistry(0,10000000000000ull, true); // list all
+  // ListFrameRegistry(0,10000000000000ull, true, device); // list all
 #endif
   // and deleting the frame buffer from FrameRegistry2 as well
   bool somethingLeaks = false;
@@ -2761,7 +2767,7 @@ VideoFrame* ScriptEnvironment::GetFrameFromRegistry(size_t vfb_size, Device* dev
       }
     } // for it2
   } // for it
-  _RPT3(0, "ScriptEnvironment::GetNewFrame, no free entry in FrameRegistry. Requested vfb size=%zu memused=%" PRIu64 " memmax=%" PRIu64 "\n", vfb_size, memory_used.load(), memory_max);
+  _RPT3(0, "ScriptEnvironment::GetNewFrame, no free entry in FrameRegistry. Requested vfb size=%zu memused=%" PRIu64 " memmax=%" PRIu64 "\n", vfb_size, device->memory_used.load(), device->memory_max);
 
 #ifdef _DEBUG
   //ListFrameRegistry(vfb_size, vfb_size, true); // for chasing stuck frames
@@ -2854,7 +2860,7 @@ VideoFrame* ScriptEnvironment::GetNewFrame(size_t vfb_size, size_t margin, Devic
    * No frame found, free all the unused frames!!!
    * -----------------------------------------------------------
    */
-  _RPT1(0, "Allocate failed. GC start memory_used=%" PRIu64 "\n", memory_used.load());
+  _RPT1(0, "Allocate failed. GC start memory_used=%" PRIu64 "\n", device->memory_used.load());
   // unfortunately if we reach here, only 0 or 1 vfbs or frames can be freed, from lower vfb sizes
   // usually it's not enough
   // yet it is true that it's meaningful only to free up smaller vfb sizes here
@@ -2888,7 +2894,7 @@ VideoFrame* ScriptEnvironment::GetNewFrame(size_t vfb_size, size_t margin, Devic
       else ++it2;
     }
   }
-  _RPT1(0, "End of garbage collection A memused=%" PRIu64 "\n", memory_used.load()); // P.F.
+  _RPT1(0, "End of garbage collection A memused=%" PRIu64 "\n", device->memory_used.load()); // P.F.
 #if 0
   static int counter = 0;
   char buf[200]; sprintf(buf, "Re allocation %d\r\n", counter++);
@@ -2977,7 +2983,7 @@ void ScriptEnvironment::ShrinkCache(Device *device)
   // Free up in one pass in FrameRegistry2
   if (shrinkcount)
   {
-    _RPT1(0, "EnsureMemoryLimit GC start: memused=%" PRIu64 "\n", memory_used.load());
+    _RPT1(0, "EnsureMemoryLimit GC start: memused=%" PRIu64 "\n", device->memory_used.load());
     int freed_vfb_count = 0;
     int freed_frame_count = 0;
     int unfreed_frame_count = 0;
@@ -3029,7 +3035,7 @@ void ScriptEnvironment::ShrinkCache(Device *device)
         else ++it2;
       }
     }
-    _RPT4(0, "End of garbage collection B: freed_vfb=%d frame=%d unfreed=%d memused=%" PRIu64 "\n", freed_vfb_count, freed_frame_count, unfreed_frame_count, memory_used.load()); // P.F.
+    _RPT4(0, "End of garbage collection B: freed_vfb=%d frame=%d unfreed=%d memused=%" PRIu64 "\n", freed_vfb_count, freed_frame_count, unfreed_frame_count, device->memory_used.load()); // P.F.
   }
 }
 
@@ -3259,12 +3265,15 @@ bool ScriptEnvironment::MakeWritable(PVideoFrame* pvf) {
   Device* device = vf->GetFrameBuffer()->device;
   PVideoFrame dst;
 
+#ifdef ENABLE_CUDA
   if (device->device_type == DEV_TYPE_CUDA) {
     // copy whole frame
     dst = GetOnDeviceFrame(vf, device);
     CopyCUDAFrame(dst, vf, threadEnv.get());
   }
-  else {
+  else 
+#endif
+  {
     const int row_size = vf->GetRowSize();
     const int height = vf->GetHeight();
 
@@ -4252,6 +4261,7 @@ const AVS_Linkage* ScriptEnvironment::GetAVSLinkage() {
 
 void ScriptEnvironment::ApplyMessage(PVideoFrame* frame, const VideoInfo& vi, const char* message, int size, int textcolor, int halocolor, int bgcolor)
 {
+#ifdef ENABLE_CUDA
   if ((*frame)->GetDevice()->device_type == DEV_TYPE_CUDA) {
     // if frame is CUDA frame, copy to CPU and apply
     PVideoFrame copy = GetOnDeviceFrame(*frame, Devices->GetCPUDevice());
@@ -4259,7 +4269,9 @@ void ScriptEnvironment::ApplyMessage(PVideoFrame* frame, const VideoInfo& vi, co
     ::ApplyMessage(&copy, vi, message, size, textcolor, halocolor, bgcolor, threadEnv.get());
     CopyCUDAFrame(*frame, copy, threadEnv.get(), true);
   }
-  else {
+  else 
+#endif
+  {
     ::ApplyMessage(frame, vi, message, size, textcolor, halocolor, bgcolor, threadEnv.get());
   }
 }
