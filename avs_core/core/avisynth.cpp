@@ -897,7 +897,7 @@ public:
   }
   virtual char* __stdcall VSprintf(const char* fmt, va_list val) {
     try {
-      std::string str = FormatString(fmt, (va_list)val);
+      std::string str = FormatString(fmt, val);
       return var_table.SaveString(str.c_str(), int(str.size())); // SaveString will add the NULL in len mode.
     }
     catch (...) {
@@ -1005,7 +1005,7 @@ struct ScriptEnvironmentTLS
   // PF 161223 why do we need thread-local global variables?
   // comment remains here until it gets cleared, anyway, I make it of no use
   VarTable var_table;
-  BufferPool BufferPool;
+  BufferPool buffer_pool;
   Device* currentDevice;
   bool closing;                 // Used to avoid deadlock, if vartable is being accessed while shutting down (Popcontext)
   bool supressCaching;
@@ -1023,7 +1023,7 @@ struct ScriptEnvironmentTLS
   ScriptEnvironmentTLS(int thread_id, InternalEnvironment* core)
     : thread_id(thread_id)
     , var_table(core->GetTopFrame())
-    , BufferPool(core)
+    , buffer_pool(core)
     , currentDevice(NULL)
     , closing(false)
     , supressCaching(false)
@@ -1177,12 +1177,12 @@ public:
   {
     if ((type != AVS_NORMAL_ALLOC) && (type != AVS_POOLED_ALLOC))
       return NULL;
-    return DISPATCH(BufferPool).Allocate(nBytes, alignment, type == AVS_POOLED_ALLOC);
+    return DISPATCH(buffer_pool).Allocate(nBytes, alignment, type == AVS_POOLED_ALLOC);
   }
 
   void __stdcall Free(void* ptr)
   {
-    DISPATCH(BufferPool).Free(ptr);
+    DISPATCH(buffer_pool).Free(ptr);
   }
 
   Device* __stdcall GetCurrentDevice() const
@@ -1268,7 +1268,7 @@ public:
   char* __stdcall VSprintf(const char* fmt, va_list val)
   {
     try {
-      std::string str = FormatString(fmt, (va_list)val);
+      std::string str = FormatString(fmt, val);
       return DISPATCH(var_table).SaveString(str.c_str(), int(str.size())); // SaveString will add the NULL in len mode.
     }
     catch (...) {
@@ -1718,6 +1718,56 @@ public:
 
 #undef DISPATCH
 };
+
+#ifdef AVS_POSIX
+static uint64_t posix_get_physical_memory() {
+  uint64_t ullTotalPhys;
+#if defined(AVS_MACOS)
+  size_t len;
+  sysctlbyname("hw.memsize", nullptr, &len, nullptr, 0);
+  int64_t memsize;
+  sysctlbyname("hw.memsize", (void*)&memsize, &len, nullptr, 0);
+  ullTotalPhys = memsize;
+#elif defined(AVS_BSD)
+  size_t len;
+  sysctlbyname("hw.physmem", nullptr, &len, nullptr, 0);
+  int64_t memsize;
+  sysctlbyname("hw.physmem", (void*)&memsize, &len, nullptr, 0);
+  ullTotalPhys = memsize;
+#else
+  // linux
+  struct sysinfo info;
+  if (sysinfo(&info) != 0) {
+    throw AvisynthError("sysinfo: error reading system statistics");
+  }
+  ullTotalPhys = (uint64_t)info.totalram * info.mem_unit;
+#endif
+  return ullTotalPhys;
+}
+
+static int64_t posix_get_available_memory() {
+  int64_t memory;
+
+  long nPageSize = sysconf(_SC_PAGE_SIZE);
+  int64_t nAvailablePhysicalPages;
+
+#if defined(AVS_MACOS)
+  vm_statistics64_data_t vmstats;
+  mach_msg_type_number_t vmstatsz = HOST_VM_INFO64_COUNT;
+  host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info_t)&vmstats, &vmstatsz);
+  nAvailablePhysicalPages = vmstats.free_count;
+#elif defined(AVS_BSD)
+  size_t nAvailablePhysicalPagesLen = sizeof(nAvailablePhysicalPages);
+  sysctlbyname("vm.stats.vm.v_free_count", &nAvailablePhysicalPages, &nAvailablePhysicalPagesLen, NULL, 0);
+#else // Linux
+  nAvailablePhysicalPages = sysconf(_SC_AVPHYS_PAGES);
+#endif
+
+  memory = nPageSize * nAvailablePhysicalPages;
+
+  return memory;
+}
+#endif
 
 static uint64_t ConstrainMemoryRequest(uint64_t requested)
 {
