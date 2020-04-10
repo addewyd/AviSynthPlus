@@ -130,12 +130,14 @@ struct {
 const _PixelClip PixelClip;
 
 
+#ifdef MSVC
 /// Helper function to count set bits in the processor mask.
-static uint32_t CountSetBits(unsigned long bitMask)
+template<typename T>
+static uint32_t CountSetBits(T bitMask)
 {
-  uint32_t LSHIFT = sizeof(unsigned long) * 8 - 1;
+  uint32_t LSHIFT = sizeof(T) * 8 - 1;
   uint32_t bitSetCount = 0;
-  unsigned long bitTest = (unsigned long)1 << LSHIFT;
+  T bitTest = (T)1 << LSHIFT;
   uint32_t i;
 
   for (i = 0; i <= LSHIFT; ++i)
@@ -146,6 +148,7 @@ static uint32_t CountSetBits(unsigned long bitMask)
 
   return bitSetCount;
 }
+#endif
 
 static size_t GetNumPhysicalCPUs()
 {
@@ -222,7 +225,7 @@ static size_t GetNumPhysicalCPUs()
       processorCoreCount++;
 
       // A hyperthreaded core supplies more than one logical processor.
-      logicalProcessorCount += CountSetBits(ptr->ProcessorMask);
+      logicalProcessorCount += CountSetBits<ULONG_PTR>(ptr->ProcessorMask);
       break;
 
     case RelationCache:
