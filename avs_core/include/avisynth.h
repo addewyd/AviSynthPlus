@@ -55,8 +55,8 @@
 // graphical user interfaces.
 
 
-#ifndef __AVISYNTH_6_H__
-#define __AVISYNTH_6_H__
+#ifndef __AVISYNTH_8_H__
+#define __AVISYNTH_8_H__
 
 #include "avs/config.h"
 #include "avs/capi.h"
@@ -71,7 +71,7 @@
 #define __cdecl
 #endif
 
-enum { AVISYNTH_INTERFACE_VERSION = 6 };
+enum { AVISYNTH_INTERFACE_VERSION = 8 };
 
 
 /* Compiler-specific crap */
@@ -1921,4 +1921,4 @@ AVSC_API(IScriptEnvironment2*, CreateScriptEnvironment2)(int version = AVISYNTH_
 
 #pragma pack(pop)
 
-#endif //__AVISYNTH_6_H__
+#endif //__AVISYNTH_8_H__
