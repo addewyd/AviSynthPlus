@@ -75,8 +75,11 @@
 // Constants
 //
 
-#ifndef __AVISYNTH_6_H__
-enum { AVISYNTH_INTERFACE_VERSION = 6 };
+#ifndef __AVISYNTH_8_H__
+enum { 
+  AVISYNTH_INTERFACE_CLASSIC_VERSION = 6,
+  AVISYNTH_INTERFACE_VERSION = 8
+};
 #endif
 
 enum {AVS_SAMPLE_INT8  = 1<<0,
